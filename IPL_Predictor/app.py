@@ -3,117 +3,74 @@ import pandas as pd
 import joblib
 import os
 
-# 1. Page Configuration
-st.set_page_config(
-    page_title="IPL 2026 Auction Predictor",
-    page_icon="🏏",
-    layout="centered"
-)
+# 1. Setup
+st.set_page_config(page_title="IPL Price Predictor", page_icon="🏏")
 
-# 2. Smart Asset Loader
 @st.cache_resource
 def load_assets():
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    model_path = os.path.join(current_dir, "model.pkl")
-    features_path = os.path.join(current_dir, "feature_names.pkl")
-    
-    if not os.path.exists(model_path) or not os.path.exists(features_path):
-        st.error("Missing model.pkl or feature_names.pkl in the app folder!")
-        st.stop()
-        
-    return joblib.load(model_path), joblib.load(features_path)
-
-# 3. Custom CSS for IPL Theme
-st.markdown("""
-    <style>
-    .reportview-container { background: #0e1117; }
-    .stButton>button {
-        width: 100%;
-        background-color: #f1c40f;
-        color: #1e3799;
-        font-weight: bold;
-        height: 3em;
-        border-radius: 10px;
-    }
-    .price-display {
-        font-size: 50px;
-        color: #f1c40f;
-        text-align: center;
-        font-weight: bold;
-        margin-top: -20px;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+    model = joblib.load(os.path.join(current_dir, "model.pkl"))
+    features = joblib.load(os.path.join(current_dir, "feature_names.pkl"))
+    return model, features
 
 try:
     model, expected_features = load_assets()
 
-    st.title("🏏 IPL 2026 Auction Predictor")
-    st.write("Performance-based Market Valuation")
-    st.divider()
-
-    # 4. Data Parsing
+    st.title("🏏 IPL Auction Predictor")
+    
+    # 2. Extract Names
     players = [f.replace('Player_', '') for f in expected_features if f.startswith('Player_')]
     teams = [f.replace('Team_', '') for f in expected_features if f.startswith('Team_')]
 
-    # 5. User Interface
+    # 3. Inputs
     col1, col2 = st.columns(2)
     with col1:
-        selected_player = st.selectbox("Select Player", sorted(players))
-        selected_team = st.selectbox("Current Team", sorted(teams))
+        sel_player = st.selectbox("Player", sorted(players))
+        sel_team = st.selectbox("Team", sorted(teams))
     with col2:
-        matches = st.slider("Matches (Recent Season)", 1, 17, 14)
-        # We use a large range for SR to see visible changes
-        strike_rate = st.number_input("Strike Rate (SR)", value=135.0, step=5.0)
+        # We increase the range and step to make the change more visible
+        slider_sr = st.slider("Strike Rate", 50.0, 300.0, 140.0, step=10.0)
+        slider_mat = st.slider("Matches", 1, 17, 10)
 
-    st.divider()
-
-    # 6. Prediction Logic
-    if st.button("Calculate Market Value"):
-        # Create an empty input row with all features set to 0
+    if st.button("Predict Price", use_container_width=True):
+        # Create empty row
         input_row = pd.DataFrame(0, index=[0], columns=expected_features)
         
-        # --- FEATURE MAPPING ---
-        # We check common variations of names to ensure the slider works
-        sr_keys = ['SR', 'Strike Rate', 'strike_rate', 'StrikeRate']
-        mat_keys = ['Mat', 'Matches', 'matches', 'Played']
-        
-        for key in sr_keys:
-            if key in input_row.columns: input_row[key] = strike_rate
-            
-        for key in mat_keys:
-            if key in input_row.columns: input_row[key] = matches
-            
-        # Set One-Hot encoded columns to 1
-        p_col = f"Player_{selected_player}"
-        t_col = f"Team_{selected_team}"
-        
-        if p_col in input_row.columns: input_row[p_col] = 1
-        if t_col in input_row.columns: input_row[t_col] = 1
-        
-        # Perform Prediction
-        raw_val = model.predict(input_row)[0]
+        # --- THE FIX: FORCE SYNC STRIKE RATE ---
+        # We find ANY column that looks like Strike Rate and give it the slider value
+        sr_found = False
+        for col in expected_features:
+            if col.lower() in ['sr', 'strike rate', 'strikerate', 'avg_sr', 'batting_sr']:
+                input_row[col] = slider_sr
+                sr_found = True
+            if col.lower() in ['mat', 'matches', 'played', 'm']:
+                input_row[col] = slider_mat
 
-        # --- UNIT CORRECTION ---
-        # If the model was trained in Lakhs (e.g. 500 for 5Cr), we divide by 100.
-        # If it was trained in Crores (e.g. 5.0 for 5Cr), we leave it.
-        # Most IPL models trained on 'Price' columns predict in Lakhs.
-        if raw_val > 30: # If prediction is higher than 30, it's likely in Lakhs
-            final_price = raw_val / 100
+        # --- THE FIX: PLAYER & TEAM ---
+        p_col, t_col = f"Player_{sel_player}", f"Team_{sel_team}"
+        if p_col in expected_features: input_row[p_col] = 1
+        if t_col in expected_features: input_row[t_col] = 1
+
+        # 4. Predict
+        raw_prediction = model.predict(input_row)[0]
+        
+        # 5. Handle "Cheap" Price (Lakhs vs Crores)
+        # If your model says 500, it means 5.00 Cr. If it says 5, it means 5 Cr.
+        if raw_prediction > 25: 
+            display_price = raw_prediction / 100
         else:
-            final_price = raw_val
+            display_price = raw_prediction
 
-        # 7. Results
-        st.balloons()
-        st.markdown("<p style='text-align: center; color: #636e72;'>ESTIMATED AUCTION VALUE</p>", unsafe_allow_html=True)
-        st.markdown(f"<div class='price-display'>₹ {max(0.20, final_price):.2f} Cr</div>", unsafe_allow_html=True)
+        # 6. Display Result
+        st.header(f"Predicted Price: ₹ {max(0.20, display_price):.2f} Cr")
         
-        # Developer Debugger (Collapse this to hide)
-        with st.expander("Developer Debugging Menu"):
-            st.write(f"Raw Model Output: {raw_val}")
-            st.write(f"Player Column Detected: {p_col in input_row.columns}")
-            st.write(f"Matches Column: {[k for k in mat_keys if k in input_row.columns]}")
-            st.write(f"Strike Rate Column: {[k for k in sr_keys if k in input_row.columns]}")
+        if not sr_found:
+            st.warning("⚠️ Warning: Could not find a 'Strike Rate' column in your model. Prices won't change.")
+
+        # Debugging tools (Hidden)
+        with st.expander("Show Technical Names (Debug)"):
+            st.write("Columns in your model:", list(expected_features)[:15])
+            st.write(f"Active SR Value sent: {slider_sr}")
 
 except Exception as e:
-    st.error(f"Prediction Error: {e}")
+    st.error(f"Error: {e}")
